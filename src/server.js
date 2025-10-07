@@ -176,7 +176,7 @@ function summarizeSessions(nowMs = Date.now()) {
 }
 
 const ALLOW_ORIGINS = new Set([
-  'https://solar-system-82998.bubbleapps.io',
+  'https://solar-nova.online',
   // Add additional production domains as needed.
 ]);
 
