@@ -141,3 +141,41 @@ test('presence ignores tombstoned clients until the tombstone expires', async ()
   assert(userAfterTombstone, 'user should reappear after tombstone expiry');
   assert.deepEqual(userAfterTombstone.paths, ['/beta?tab=revived']);
 });
+
+test('presence transitions to idle when only pings are received', async () => {
+  const agent = request(app);
+  const uid = 'user-idle';
+  const clientId = 'client-idle';
+
+  const originalDateNow = Date.now;
+  try {
+    let now = originalDateNow();
+    Date.now = () => now;
+
+    const firstPing = await agent
+      .post('/presence/ping')
+      .send({ uid, clientId, path: '/idle' })
+      .expect(200);
+    assert.equal(firstPing.body.ok, true);
+
+    let summary = await agent.get('/presence/summary').expect(200);
+    assert.equal(summary.body.active.length, 1);
+    assert.equal(summary.body.idle.length, 0);
+
+    now += constants.ACTIVE_MS + 1;
+
+    const keepAlivePing = await agent
+      .post('/presence/ping')
+      .send({ uid, clientId, path: '/idle' })
+      .expect(200);
+    assert.equal(keepAlivePing.body.ok, true);
+
+    summary = await agent.get('/presence/summary').expect(200);
+    assert.equal(summary.body.active.length, 0);
+    assert.equal(summary.body.idle.length, 1);
+    assert.equal(summary.body.idle[0].uid, uid);
+    assert.deepEqual(summary.body.idle[0].paths, ['/idle']);
+  } finally {
+    Date.now = originalDateNow;
+  }
+});

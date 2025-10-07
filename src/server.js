@@ -46,7 +46,11 @@ function normClientId(clientId) {
   return value ? value : '';
 }
 
-function touchSession({ uid, path, clientId }, nowMs = Date.now()) {
+function touchSession(
+  { uid, path, clientId },
+  nowMs = Date.now(),
+  { isActivity = true } = {},
+) {
   const normalizedClientId = normClientId(clientId);
   if (!normalizedClientId) {
     return { ok: false, error: 'invalid_clientId' };
@@ -67,12 +71,16 @@ function touchSession({ uid, path, clientId }, nowMs = Date.now()) {
     session = {
       uid: normalizedUid,
       lastActivityMs: nowMs,
+      lastPingMs: nowMs,
       currentPath: normalizedPath,
     };
     SESS.set(normalizedClientId, session);
   } else {
     session.uid = normalizedUid;
-    session.lastActivityMs = nowMs;
+    if (isActivity) {
+      session.lastActivityMs = nowMs;
+    }
+    session.lastPingMs = nowMs;
     session.currentPath = normalizedPath;
   }
 
@@ -91,7 +99,8 @@ function removeSession({ clientId }, nowMs = Date.now()) {
 
 function sweepExpiredSessions(nowMs = Date.now()) {
   for (const [clientId, session] of SESS.entries()) {
-    if (nowMs - session.lastActivityMs >= CLOSE_MS) {
+    const lastPingMs = session.lastPingMs ?? session.lastActivityMs;
+    if (nowMs - lastPingMs >= CLOSE_MS) {
       SESS.delete(clientId);
     }
   }
@@ -106,7 +115,8 @@ function summarizeSessions(nowMs = Date.now()) {
   const tracker = new Map();
 
   for (const session of SESS.values()) {
-    if (nowMs - session.lastActivityMs >= CLOSE_MS) {
+    const lastPingMs = session.lastPingMs ?? session.lastActivityMs;
+    if (nowMs - lastPingMs >= CLOSE_MS) {
       continue;
     }
 
@@ -176,7 +186,7 @@ app.post('/presence/ping', (req, res) => {
   if (!ensureBodyObject(req.body)) {
     return res.status(400).json({ ok: false, error: 'invalid_body' });
   }
-  const result = touchSession(req.body);
+  const result = touchSession(req.body, undefined, { isActivity: false });
   if (!result.ok) {
     return res.status(400).json({ ok: false, error: result.error });
   }
@@ -223,6 +233,7 @@ if (process.env.NODE_ENV !== 'production') {
       clientId,
       uid: session.uid,
       lastActivityMs: session.lastActivityMs,
+      lastPingMs: session.lastPingMs,
       currentPath: session.currentPath,
     }));
     res.json({ size: SESS.size, sessions: sessionsDebug });
