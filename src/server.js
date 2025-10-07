@@ -3,9 +3,11 @@ const express = require('express');
 const ACTIVE_MS = 30_000;
 const CLOSE_MS = 180_000;
 const GC_INTERVAL_MS = 10_000;
+const TOMBSTONE_MS = 60_000;
 const PORT = Number.parseInt(process.env.PORT, 10) || 8080;
 
 const SESS = new Map();
+const TOMBSTONES = new Map();
 
 function ensureBodyObject(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
@@ -30,24 +32,13 @@ function normUid(uid) {
 }
 
 function normPath(path) {
-  const value = normalizeString(path).trim().toLowerCase();
-  if (!value) {
-    return '/';
-  }
-
-  let normalized = value.startsWith('/') ? value : `/${value}`;
-
-  if (normalized.length > 1) {
-    normalized = normalized.replace(/\/+$/u, '');
-    if (!normalized.startsWith('/')) {
-      normalized = `/${normalized}`;
-    }
-    if (!normalized) {
-      normalized = '/';
-    }
-  }
-
-  return normalized || '/';
+  const trimmedValue = normalizeString(path).trim();
+  const value = trimmedValue || '/';
+  const prefix = value.startsWith('/') ? '' : '/';
+  const url = new URL(`http://x${prefix}${value}`);
+  const trimmedPath = url.pathname.replace(/^\/+/u, '').replace(/\/+$/u, '');
+  const normalizedPath = trimmedPath ? `/${trimmedPath}` : '/';
+  return `${normalizedPath}${url.search}`.toLowerCase();
 }
 
 function normClientId(clientId) {
@@ -61,6 +52,14 @@ function touchSession({ uid, path, clientId }, nowMs = Date.now()) {
     return { ok: false, error: 'invalid_clientId' };
   }
 
+  const tombstoneExpires = TOMBSTONES.get(normalizedClientId);
+  if (tombstoneExpires !== undefined) {
+    if (tombstoneExpires > nowMs) {
+      return { ok: true, ignored: 'tombstoned' };
+    }
+    TOMBSTONES.delete(normalizedClientId);
+  }
+
   const normalizedUid = normUid(uid);
   const normalizedPath = normPath(path);
   let session = SESS.get(normalizedClientId);
@@ -68,61 +67,37 @@ function touchSession({ uid, path, clientId }, nowMs = Date.now()) {
     session = {
       uid: normalizedUid,
       lastActivityMs: nowMs,
-      paths: new Set(),
+      currentPath: normalizedPath,
     };
     SESS.set(normalizedClientId, session);
+  } else {
+    session.uid = normalizedUid;
+    session.lastActivityMs = nowMs;
+    session.currentPath = normalizedPath;
   }
-
-  if (!(session.paths instanceof Set)) {
-    session.paths = new Set();
-  }
-
-  if (session.uid !== normalizedUid) {
-    session.paths.clear();
-  }
-
-  session.uid = normalizedUid;
-  session.lastActivityMs = nowMs;
-  session.paths.add(normalizedPath);
 
   return { ok: true };
 }
 
-function removeSession({ uid, path, clientId }) {
+function removeSession({ clientId }, nowMs = Date.now()) {
   const normalizedClientId = normClientId(clientId);
   if (!normalizedClientId) {
     return false;
   }
-
-  const normalizedUid = normUid(uid);
-  const session = SESS.get(normalizedClientId);
-  if (!session || session.uid !== normalizedUid) {
-    return false;
-  }
-
-  if (!(session.paths instanceof Set)) {
-    return SESS.delete(normalizedClientId);
-  }
-
-  if (path === undefined) {
-    return SESS.delete(normalizedClientId);
-  }
-
-  const normalizedPath = normPath(path);
-  session.paths.delete(normalizedPath);
-
-  if (session.paths.size === 0) {
-    SESS.delete(normalizedClientId);
-    return true;
-  }
-
-  return false;
+  const deleted = SESS.delete(normalizedClientId);
+  TOMBSTONES.set(normalizedClientId, nowMs + TOMBSTONE_MS);
+  return deleted;
 }
 
 function sweepExpiredSessions(nowMs = Date.now()) {
   for (const [clientId, session] of SESS.entries()) {
     if (nowMs - session.lastActivityMs >= CLOSE_MS) {
       SESS.delete(clientId);
+    }
+  }
+  for (const [clientId, expiresMs] of TOMBSTONES.entries()) {
+    if (expiresMs <= nowMs) {
+      TOMBSTONES.delete(clientId);
     }
   }
 }
@@ -146,10 +121,8 @@ function summarizeSessions(nowMs = Date.now()) {
       entry.latest = session.lastActivityMs;
     }
 
-    const sessionPaths =
-      session.paths instanceof Set ? session.paths : session.path ? [session.path] : [];
-    for (const p of sessionPaths) {
-      entry.paths.add(normPath(p));
+    if (session.currentPath) {
+      entry.paths.add(normPath(session.currentPath));
     }
   }
 
@@ -207,7 +180,7 @@ app.post('/presence/ping', (req, res) => {
   if (!result.ok) {
     return res.status(400).json({ ok: false, error: result.error });
   }
-  return res.json({ ok: true });
+  return res.json(result);
 });
 
 app.post('/presence/hit', (req, res) => {
@@ -218,7 +191,7 @@ app.post('/presence/hit', (req, res) => {
   if (!result.ok) {
     return res.status(400).json({ ok: false, error: result.error });
   }
-  return res.json({ ok: true });
+  return res.json(result);
 });
 
 app.post('/presence/leave', (req, res) => {
@@ -250,7 +223,7 @@ if (process.env.NODE_ENV !== 'production') {
       clientId,
       uid: session.uid,
       lastActivityMs: session.lastActivityMs,
-      paths: Array.from(session.paths).sort(),
+      currentPath: session.currentPath,
     }));
     res.json({ size: SESS.size, sessions: sessionsDebug });
   });
@@ -304,10 +277,12 @@ module.exports = {
     return server;
   },
   sessions: SESS,
+  tombstones: TOMBSTONES,
   constants: {
     ACTIVE_MS,
     CLOSE_MS,
     GC_INTERVAL_MS,
+    TOMBSTONE_MS,
   },
   helpers: {
     normUid,
