@@ -26,7 +26,7 @@ Bubble ページの HTML 要素に以下を貼り付けます。
   }
   startPresence();
   function startPresence() {
-    const ORIGIN = "https://online-status-677366504119.asia-northeast1.run.app";
+    const ORIGIN = "https://online-status-trygreen-677366504119.asia-northeast1.run.app";
     const uidRaw = "Current User's unique id";
     const UID = (uidRaw && uidRaw.trim()) ? uidRaw.trim() : "logout user";
     const RAW = location.pathname || "/";
@@ -72,7 +72,7 @@ Bubble の管理ページに HTML 要素を追加し、以下を貼り付けま�
 ```html
 <script>
 (() => {
-  const ORIGIN = "https://online-status-677366504119.asia-northeast1.run.app";
+  const ORIGIN = "https://online-status-trygreen-677366504119.asia-northeast1.run.app";
   const SNAP = { active: [], idle: [] };
   function pushToBubble(){
     if(typeof window.bubble_fn_active_users==="function")window.bubble_fn_active_users(JSON.stringify(SNAP.active||[]));
